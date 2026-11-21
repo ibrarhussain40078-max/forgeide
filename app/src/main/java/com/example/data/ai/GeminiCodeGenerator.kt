@@ -3,14 +3,17 @@ package com.example.data.ai
 import android.util.Log
 import com.example.data.model.CodeFile
 import com.example.data.model.IdeMode
-import com.google.firebase.Firebase
-import com.google.firebase.ai.ai
-import com.google.firebase.ai.type.Schema
-import com.google.firebase.ai.type.content
-import com.google.firebase.ai.type.generationConfig
+import java.io.IOException
+import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.TimeoutCancellationException
-import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import okhttp3.RequestBody.Companion.toRequestBody
+import org.json.JSONArray
+import org.json.JSONObject
 
 private const val TAG = "GeminiCodeGenerator"
 
@@ -20,68 +23,112 @@ data class GeneratedProjectPayload(
     val files: List<CodeFile>
 )
 
-class GeminiCodeGenerator {
+/**
+ * Calls the Gemini API directly with the user's own API key (get one free at aistudio.google.com).
+ * No Firebase / App Check involved, so it works in any build of the app.
+ */
+class GeminiCodeGenerator(
+    /** Returns (apiKey, modelName). Read on every call so Settings changes apply immediately. */
+    private val settings: () -> Pair<String, String>
+) {
 
-    private val projectResponseSchema = Schema.obj(
-        properties = mapOf(
-            "projectName" to Schema.string(description = "Short 2-4 word project title"),
-            "summary" to Schema.string(description = "Concise 1-sentence summary of the generated app or website"),
-            "files" to Schema.array(
-                items = Schema.obj(
-                    properties = mapOf(
-                        "name" to Schema.string(description = "File name such as index.html, styles.css, app.js, MainActivity.kt, AndroidManifest.xml, build.gradle.kts, or ui-preview.json"),
-                        "content" to Schema.string(description = "Complete working source code for this file")
-                    )
-                ),
-                description = "All project source files"
+    private val client = OkHttpClient.Builder()
+        .connectTimeout(30, TimeUnit.SECONDS)
+        .readTimeout(180, TimeUnit.SECONDS)
+        .writeTimeout(60, TimeUnit.SECONDS)
+        .build()
+
+    private val jsonType = "application/json; charset=utf-8".toMediaType()
+
+    private val systemInstruction = """
+        You are ForgeIDE, an expert full-stack web and native Android Jetpack Compose architect.
+        Generate complete, production-quality, bug-free multi-file projects with zero placeholder TODOs.
+        Never return markdown fences inside JSON string fields; return raw valid source code per file.
+    """.trimIndent()
+
+    private fun responseSchema(): JSONObject {
+        fun str(desc: String) = JSONObject().put("type", "STRING").put("description", desc)
+        val file = JSONObject().put("type", "OBJECT").put(
+            "properties",
+            JSONObject()
+                .put("name", str("File name such as index.html, styles.css, app.js, MainActivity.kt, AndroidManifest.xml or ui-preview.json"))
+                .put("content", str("Complete working source code for this file"))
+        ).put("required", JSONArray().put("name").put("content"))
+        return JSONObject().put("type", "OBJECT").put(
+            "properties",
+            JSONObject()
+                .put("projectName", str("Short 2-4 word project title"))
+                .put("summary", str("Concise 1-sentence summary of the generated app or website"))
+                .put("files", JSONObject().put("type", "ARRAY").put("items", file).put("description", "All project source files"))
+        ).put("required", JSONArray().put("projectName").put("summary").put("files"))
+    }
+
+    /** One Gemini REST call. Returns the model's JSON text or a human-readable failure. */
+    private suspend fun call(prompt: String): Result<String> = withContext(Dispatchers.IO) {
+        val (apiKey, modelRaw) = settings()
+        if (apiKey.isBlank()) {
+            return@withContext Result.failure(
+                IllegalStateException("No Gemini API key. Open Settings (gear icon), paste a free key from aistudio.google.com, and save.")
             )
-        )
-    )
-
-    private val model by lazy {
-        Firebase.ai.generativeModel(
-            modelName = "gemini-3.8-flash",
-            generationConfig = generationConfig {
-                responseMimeType = "application/json"
-                responseSchema = projectResponseSchema
-                temperature = 0.4f
-            },
-            systemInstruction = content {
-                text(
-                    """
-                    You are ForgeIDE, an expert full-stack web and native Android Jetpack Compose architect.
-                    Generate complete, production-quality, bug-free multi-file projects with zero placeholder TODOs.
-                    Never return markdown fences inside JSON string fields; return raw valid source code per file.
-                    """.trimIndent()
-                )
+        }
+        val model = modelRaw.trim().ifBlank { DEFAULT_MODEL }
+        val body = JSONObject()
+            .put("systemInstruction", JSONObject().put("parts", JSONArray().put(JSONObject().put("text", systemInstruction))))
+            .put("contents", JSONArray().put(JSONObject().put("role", "user").put("parts", JSONArray().put(JSONObject().put("text", prompt)))))
+            .put(
+                "generationConfig",
+                JSONObject()
+                    .put("responseMimeType", "application/json")
+                    .put("responseSchema", responseSchema())
+                    .put("temperature", 0.4)
+            )
+        val request = Request.Builder()
+            .url("https://generativelanguage.googleapis.com/v1beta/models/$model:generateContent")
+            .header("x-goog-api-key", apiKey.trim())
+            .post(body.toString().toRequestBody(jsonType))
+            .build()
+        try {
+            client.newCall(request).execute().use { r ->
+                val text = r.body?.string().orEmpty()
+                if (!r.isSuccessful) {
+                    val msg = runCatching { JSONObject(text).getJSONObject("error").getString("message") }.getOrDefault(text.take(200))
+                    return@withContext Result.failure(IOException(explain(r.code, msg, model)))
+                }
+                val root = JSONObject(text)
+                val candidate = root.optJSONArray("candidates")?.optJSONObject(0)
+                val out = candidate?.optJSONObject("content")?.optJSONArray("parts")?.optJSONObject(0)?.optString("text").orEmpty()
+                if (out.isBlank()) {
+                    val reason = candidate?.optString("finishReason").orEmpty().ifBlank { "no content" }
+                    Result.failure(IllegalStateException("Gemini returned an empty response ($reason). Try again or simplify the prompt."))
+                } else {
+                    Result.success(out)
+                }
             }
-        )
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: IOException) {
+            Log.e(TAG, "Gemini request failed", e)
+            Result.failure(IOException("Network error talking to Gemini: ${e.message}", e))
+        }
+    }
+
+    private fun explain(code: Int, msg: String, model: String): String = when (code) {
+        400 -> "Gemini rejected the request (400): $msg. Check the API key in Settings."
+        401, 403 -> "Gemini API key was refused ($code). Create a new key at aistudio.google.com and save it in Settings."
+        404 -> "Model '$model' was not found. Change the model name in Settings (try $DEFAULT_MODEL)."
+        429 -> "Gemini rate limit or quota reached (429). Wait a minute and retry."
+        else -> "Gemini error $code: $msg"
     }
 
     suspend fun generateProject(
         mode: IdeMode,
         prompt: String,
         existingFiles: List<CodeFile>
-    ): Result<GeneratedProjectPayload> {
-        return try {
-            val modePrompt = buildModePrompt(mode, prompt, existingFiles)
-            val response = withTimeout(60_000L) {
-                model.generateContent(modePrompt)
-            }
-            val rawJson = response.text
-                ?: return Result.failure(IllegalStateException("Gemini returned an empty response."))
-
-            PayloadParser.parse(rawJson, "Generated Project", "Generated code loaded into workspace.")
-        } catch (e: TimeoutCancellationException) {
-            Log.e(TAG, "Gemini generation timed out", e)
-            Result.failure(Exception("Generation timed out after 60 seconds. Please try a simpler prompt or retry."))
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            Log.e(TAG, "Gemini generation failed", e)
-            Result.failure(e)
-        }
-    }
+    ): Result<GeneratedProjectPayload> =
+        call(buildModePrompt(mode, prompt, existingFiles)).fold(
+            onSuccess = { PayloadParser.parse(it, "Generated Project", "Generated code loaded into workspace.") },
+            onFailure = { Result.failure(it) }
+        )
 
     suspend fun fixCodeError(
         mode: IdeMode,
@@ -89,40 +136,28 @@ class GeminiCodeGenerator {
         files: List<CodeFile>,
         errorMessage: String
     ): Result<GeneratedProjectPayload> {
-        return try {
-            val filesDump = files.joinToString("\n\n") { file ->
-                "=== FILE: ${file.name} ===\n${file.content}"
-            }
-            val prompt = """
-                TARGET MODE: ${mode.label}
-                PROJECT NAME: $projectName
-                REPORTED ERROR:
-                $errorMessage
+        val filesDump = files.joinToString("\n\n") { "=== FILE: ${it.name} ===\n${it.content}" }
+        val prompt = """
+            TARGET MODE: ${mode.label}
+            PROJECT NAME: $projectName
+            REPORTED ERROR:
+            $errorMessage
 
-                CURRENT PROJECT FILES:
-                $filesDump
+            CURRENT PROJECT FILES:
+            $filesDump
 
-                TASK:
-                Diagnose the error above and return ALL project files with the bug fixed.
-                Keep existing features intact and explain the fix concisely in "summary".
-            """.trimIndent()
+            TASK:
+            Diagnose the error above and return ALL project files with the bug fixed.
+            Keep existing features intact and explain the fix concisely in "summary".
+        """.trimIndent()
+        return call(prompt).fold(
+            onSuccess = { PayloadParser.parse(it, projectName, "Patched error in project files.") },
+            onFailure = { Result.failure(it) }
+        )
+    }
 
-            val response = withTimeout(60_000L) {
-                model.generateContent(prompt)
-            }
-            val rawJson = response.text
-                ?: return Result.failure(IllegalStateException("Gemini returned an empty response."))
-
-            PayloadParser.parse(rawJson, projectName, "Patched error in project files.")
-        } catch (e: TimeoutCancellationException) {
-            Log.e(TAG, "Gemini error fix timed out", e)
-            Result.failure(Exception("AI fix timed out after 60 seconds. Please retry."))
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            Log.e(TAG, "Gemini error fix failed", e)
-            Result.failure(e)
-        }
+    companion object {
+        const val DEFAULT_MODEL = "gemini-2.5-flash"
     }
 
     private fun buildModePrompt(

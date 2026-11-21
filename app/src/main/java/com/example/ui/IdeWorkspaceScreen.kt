@@ -345,7 +345,10 @@ fun IdeWorkspaceScreen(
             onOpenWorkflowYaml = {
                 showWorkflowYamlDialog = true
             },
-            onDismiss = { showCloudSettingsDialog = false }
+            onDismiss = { showCloudSettingsDialog = false },
+            geminiKey = state.geminiApiKey,
+            geminiModel = state.geminiModel,
+            onSaveGemini = viewModel::saveGeminiSettings
         )
     }
 

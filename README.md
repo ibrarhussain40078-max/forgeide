@@ -5,7 +5,7 @@ An on-device, AI-assisted IDE for Android. Build **websites** (HTML/CSS/JS) or *
 
 ## Features
 - Multi-file editor with syntax highlighting, file explorer, autosave (Room)
-- Gemini code generation and "fix this error" via Firebase AI Logic + App Check (no API key in the APK)
+- Gemini code generation and "fix this error" using **your own Gemini API key** (free at aistudio.google.com), entered in Settings and stored encrypted with Android Keystore. No Firebase/App Check needed.
 - Safe AI output handling: file names are sanitized (no path traversal), markdown fences are stripped, and every AI rewrite can be **undone**
 - Website mode: sandboxed WebView preview, viewport presets, live console capture
 - Android mode: interactive JSON-driven UI simulator, plus real debug APKs via GitHub Actions (the simulator is an approximate preview, not the compiled app)
@@ -15,7 +15,7 @@ An on-device, AI-assisted IDE for Android. Build **websites** (HTML/CSS/JS) or *
 | Layer | Path | Notes |
 |---|---|---|
 | UI (Compose) | `ui/` | `IdeViewModel` holds a single `StateFlow<IdeUiState>` |
-| AI | `data/ai/` | `GeminiCodeGenerator` (network) + `PayloadParser` (pure, tested) |
+| AI | `data/ai/` | `GeminiCodeGenerator` (Gemini REST API) + `PayloadParser` (pure, tested) |
 | Persistence | `data/local/` | Room workspace per mode; GitHub PAT encrypted with Android Keystore (AES-GCM) |
 | Build/export | `data/remote/`, `data/export/` | GitHub Actions build pipeline; ZIP packager |
 
@@ -34,8 +34,7 @@ Actions read/write, and workflow write (to install the workflow file). It is enc
 
 ## Run locally
 1. Open in Android Studio (JDK 17).
-2. Provide your own Firebase project (`app/google-services.json`) with Firebase AI Logic and App Check enabled.
-3. Run on a device/emulator.
+2. Run on a device/emulator, open Settings (gear) and paste your Gemini API key.
 
 ## Test
 ```

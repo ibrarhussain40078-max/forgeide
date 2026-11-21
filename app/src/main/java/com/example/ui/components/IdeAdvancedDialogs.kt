@@ -90,8 +90,14 @@ fun GitHubCloudSettingsDialog(
     onSave: (GitHubBuildConfig) -> Unit,
     onClearSecrets: () -> Unit,
     onOpenWorkflowYaml: () -> Unit,
-    onDismiss: () -> Unit
+    onDismiss: () -> Unit,
+    geminiKey: String = "",
+    geminiModel: String = "",
+    onSaveGemini: (String, String) -> Unit = { _, _ -> }
 ) {
+    var gemKey by remember(geminiKey) { mutableStateOf(geminiKey) }
+    var gemModel by remember(geminiModel) { mutableStateOf(geminiModel) }
+    var showGemKey by remember { mutableStateOf(false) }
     var token by remember(currentConfig) { mutableStateOf(currentConfig.token) }
     var owner by remember(currentConfig) { mutableStateOf(currentConfig.owner) }
     var repo by remember(currentConfig) { mutableStateOf(currentConfig.repo) }
@@ -153,6 +159,39 @@ fun GitHubCloudSettingsDialog(
                         color = TextSecondary
                     )
                 }
+
+                Text("Gemini AI (code generation)", style = MaterialTheme.typography.titleSmall, color = TextPrimary)
+                OutlinedTextField(
+                    value = gemKey,
+                    onValueChange = { gemKey = it },
+                    label = { Text("Gemini API Key") },
+                    placeholder = { Text("Free key from aistudio.google.com") },
+                    singleLine = true,
+                    visualTransformation = if (showGemKey) VisualTransformation.None else PasswordVisualTransformation(),
+                    trailingIcon = {
+                        IconButton(onClick = { showGemKey = !showGemKey }) {
+                            Icon(
+                                imageVector = if (showGemKey) Icons.Default.VisibilityOff else Icons.Default.Visibility,
+                                contentDescription = "Toggle key visibility",
+                                tint = TextSecondary
+                            )
+                        }
+                    },
+                    colors = fieldColors,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("gemini_key_input")
+                )
+                OutlinedTextField(
+                    value = gemModel,
+                    onValueChange = { gemModel = it },
+                    label = { Text("Model (optional)") },
+                    placeholder = { Text("gemini-2.5-flash") },
+                    singleLine = true,
+                    colors = fieldColors,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                Text("GitHub (cloud APK build)", style = MaterialTheme.typography.titleSmall, color = TextPrimary)
 
                 OutlinedTextField(
                     value = token,
@@ -251,6 +290,7 @@ fun GitHubCloudSettingsDialog(
         confirmButton = {
             Button(
                 onClick = {
+                    onSaveGemini(gemKey, gemModel)
                     onSave(
                         GitHubBuildConfig(
                             token = token.trim(),

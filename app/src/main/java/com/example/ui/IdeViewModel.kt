@@ -61,7 +61,9 @@ data class IdeUiState(
     val isSaved: Boolean = true,
     val refreshNonce: Long = 1L,
     val statusMessage: String? = null,
-    val undoSnapshot: WorkspaceSnapshot? = null
+    val undoSnapshot: WorkspaceSnapshot? = null,
+    val geminiApiKey: String = "",
+    val geminiModel: String = ""
 ) {
     val activeFile: CodeFile?
         get() = files.firstOrNull { it.name == activeFileName } ?: files.firstOrNull()
@@ -75,12 +77,14 @@ class IdeViewModel(application: Application) : AndroidViewModel(application) {
     private val secureGitHubPrefs: SecureGitHubPrefs by lazy {
         SecureGitHubPrefs(application)
     }
-    private val geminiGenerator = GeminiCodeGenerator()
+    private val geminiGenerator = GeminiCodeGenerator { secureGitHubPrefs.loadGemini() }
     private val gitHubBuildService = GitHubBuildService()
     private val timeFormat = SimpleDateFormat("HH:mm:ss", Locale.US)
 
     private val _uiState = MutableStateFlow(
-        IdeUiState(gitHubConfig = secureGitHubPrefs.loadConfig())
+        secureGitHubPrefs.loadGemini().let { (gemKey, gemModel) ->
+            IdeUiState(gitHubConfig = secureGitHubPrefs.loadConfig(), geminiApiKey = gemKey, geminiModel = gemModel)
+        }
     )
     val uiState: StateFlow<IdeUiState> = _uiState.asStateFlow()
 
@@ -185,12 +189,29 @@ class IdeViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun saveGeminiSettings(apiKey: String, model: String) {
+        val ok = secureGitHubPrefs.saveGemini(apiKey, model)
+        _uiState.update {
+            it.copy(
+                geminiApiKey = if (ok) apiKey.trim() else "",
+                geminiModel = model.trim(),
+                statusMessage = when {
+                    !ok -> "Secure storage unavailable: Gemini key was NOT saved."
+                    apiKey.isBlank() -> "Gemini API key removed."
+                    else -> "Gemini API key saved."
+                }
+            )
+        }
+    }
+
     fun clearGitHubSecrets() {
         secureGitHubPrefs.clearSecrets()
         _uiState.update {
             it.copy(
                 gitHubConfig = GitHubBuildConfig(),
-                statusMessage = "Cleared saved GitHub secrets."
+                geminiApiKey = "",
+                geminiModel = "",
+                statusMessage = "Cleared saved secrets."
             )
         }
     }

@@ -68,6 +68,33 @@ class SecureGitHubPrefs(context: Context) {
         return tokenStored
     }
 
+    /** Returns (apiKey, model). */
+    fun loadGemini(): Pair<String, String> {
+        val enc = prefs.getString(KEY_GEMINI_ENC, null)
+        val iv = prefs.getString(KEY_GEMINI_IV, null)
+        val key = if (!enc.isNullOrBlank() && !iv.isNullOrBlank()) decryptToken(enc, iv) else ""
+        return key to prefs.getString(KEY_GEMINI_MODEL, "").orEmpty()
+    }
+
+    /** Returns false if the key could not be encrypted (nothing is stored in that case). */
+    fun saveGemini(apiKey: String, model: String): Boolean {
+        val editor = prefs.edit().putString(KEY_GEMINI_MODEL, model.trim())
+        var ok = true
+        if (apiKey.isBlank()) {
+            editor.remove(KEY_GEMINI_ENC).remove(KEY_GEMINI_IV)
+        } else {
+            val enc = encryptToken(apiKey.trim())
+            if (enc == null) {
+                editor.remove(KEY_GEMINI_ENC).remove(KEY_GEMINI_IV)
+                ok = false
+            } else {
+                editor.putString(KEY_GEMINI_ENC, enc.first).putString(KEY_GEMINI_IV, enc.second)
+            }
+        }
+        editor.apply()
+        return ok
+    }
+
     fun clearSecrets() {
         prefs.edit().clear().apply()
     }
@@ -130,5 +157,8 @@ class SecureGitHubPrefs(context: Context) {
         private const val KEY_REPO = "gh_repo"
         private const val KEY_BRANCH = "gh_branch"
         private const val KEY_WORKFLOW = "gh_workflow"
+        private const val KEY_GEMINI_ENC = "gm_key_enc"
+        private const val KEY_GEMINI_IV = "gm_key_iv"
+        private const val KEY_GEMINI_MODEL = "gm_model"
     }
 }
