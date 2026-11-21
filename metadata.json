@@ -1,0 +1,6 @@
+{
+  "name": "ForgeIDE",
+  "description": "AI-powered dual-mode Website and Android App Builder IDE with multi-file editor, live preview, Gemini code generation, and project export.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
